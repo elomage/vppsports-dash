@@ -1,0 +1,16 @@
+.metrics-controls input[type='number'] {
+    width: 110px;
+    border: 1px solid var(--m-border);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 13px;
+    color: var(--m-text);
+}
+
+.metrics-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--m-dim);
+}
