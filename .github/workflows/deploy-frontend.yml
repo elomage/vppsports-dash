@@ -41,10 +41,11 @@ jobs:
       - name: Deploy new image
         run: |
           az config set extension.use_dynamic_install=yes_without_prompt
-          az containerapp update -n vppsports-frontend -g vppsports \
-            --image ${{ secrets.ACR_LOGIN_SERVER }}/vppsport-frontend:${{ github.sha }} \
-            --registry-server ${{ secrets.ACR_LOGIN_SERVER }} \
-            --registry-username ${{ secrets.ACR_USERNAME }} \
-            --registry-password ${{ secrets.ACR_PASSWORD }}
+          az containerapp registry set -n vppsports-frontend -g vppsports \
+            --server ${{ secrets.ACR_LOGIN_SERVER }} \
+            --username ${{ secrets.ACR_USERNAME }} \
+            --password ${{ secrets.ACR_PASSWORD }}
+          az containerapp show -n vppsports-frontend -g vppsports \
+            --query "properties.configuration.registries[].server" -o tsv
           az containerapp update -n vppsports-frontend -g vppsports \
             --image ${{ secrets.ACR_LOGIN_SERVER }}/vppsport-frontend:${{ github.sha }}
