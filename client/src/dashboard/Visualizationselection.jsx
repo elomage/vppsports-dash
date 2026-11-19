@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './Visualizationselection.css';
-import { checkRunVideoExists, fetchPluginAssignments } from './api';
+import { checkRunVideoExists, fetchPluginAssignments } from "../api";
 
 const componentsMap = {
-    info: React.lazy(() => import('./Infovisualizer')),
-    echart: React.lazy(() => import('./EChartGraph')),
-    video: React.lazy(() => import('./VideoVisualizer')),
-    model: React.lazy(() => import('./Modelvisualizer')),
-    metrics: React.lazy(() => import('./MetricsVisualizer')),
+    info: React.lazy(() => import("../visualizers/Infovisualizer")),
+    echart: React.lazy(() => import("../visualizers/EChartGraph")),
+    video: React.lazy(() => import("../visualizers/VideoVisualizer")),
+    model: React.lazy(() => import("../visualizers/Modelvisualizer")),
+    metrics: React.lazy(() => import("../visualizers/MetricsVisualizer")),
+    gps: React.lazy(() => import("../visualizers/GpsVisualizer")),
 };
 
 const TOOLBAR = [
@@ -16,6 +17,7 @@ const TOOLBAR = [
     { type: 'info', label: 'Info' },
     { type: 'model', label: 'Model' },
     { type: 'metrics', label: 'Ride metrics' },
+    { type: 'gps', label: 'GPS map' },
 ];
 
 const WRAPPER_CLASS = {
@@ -23,6 +25,7 @@ const WRAPPER_CLASS = {
     model: 'model-wrapper',
     video: 'video-wrapper',
     metrics: 'metrics-wrapper',
+    gps: 'gps-wrapper',
 };
 
 const CHARTS_PER_ROW = 2;
@@ -59,7 +62,7 @@ function buildRows(items) {
 function isTypeEnabled(vizPlugins, type) {
     if (!vizPlugins) return true;
     const plugin = vizPlugins.find((p) => p.id === type);
-    return plugin ? plugin.enabled : type === 'metrics';
+    return plugin ? plugin.enabled : type === 'metrics' || type === 'gps';
 }
 
 const newId = () => Date.now() + Math.random();
@@ -68,7 +71,6 @@ export default function ComponentSelector({ selectedRun, effectiveTimestamps, sl
     const [selectedComponent, setSelectedComponent] = useState([
         { id: 1, type: 'echart', flexGrow: 1 },
         { id: 2, type: 'video', flexGrow: 1 },
-        { id: 3, type: 'metrics', flexGrow: 1 },
     ]);
     const [hasVideoForRun, setHasVideoForRun] = useState(true);
     const [vizPlugins, setVizPlugins] = useState(null);
@@ -80,6 +82,10 @@ export default function ComponentSelector({ selectedRun, effectiveTimestamps, sl
             return [...prev, { id: newId(), type, flexGrow: 1 }];
         });
     };
+
+    useEffect(() => {
+        setSelectedComponent((prev) => prev.filter((c) => c.type !== 'metrics'));
+    }, [selectedRun?._id]);
 
     const removeComponent = (id) => {
         setSelectedComponent((prev) => prev.filter((c) => c.id !== id));

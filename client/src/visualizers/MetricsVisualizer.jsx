@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { fetchRunSensors, fetchSensorRaw } from './api';
+import { fetchRunSensors, fetchSensorRaw } from "../api";
 import { EChart, Card, Kpis } from './metrics/ui';
 import SegmentsTab from './metrics/SegmentsTab';
 import { baseGrid, dashed, axisText } from './metrics/chartTheme';

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { login } from "./api";
+import { login } from "../api";
 import "./AuthPage.css";
 
 const AuthPage = ({ onAuthenticated }) => {

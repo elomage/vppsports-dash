@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { deleteRun, exportMultiRunCsv } from "../../api";
-import MultiRunExport from "../../MultiRunExport";
+import MultiRunExport from "../../export/MultiRunExport";
 import Card from "../components/Card";
 import ConfirmButton from "../components/ConfirmButton";
 import StatusMessage from "../components/StatusMessage";

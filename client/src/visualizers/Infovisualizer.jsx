@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { updateRunMetadata } from './api';
+import { updateRunMetadata } from "../api";
 
 const hasMetadata = (metadata) =>
   metadata && typeof metadata === 'object' && !Array.isArray(metadata) && Object.keys(metadata).length > 0;

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { exportAprioriCsv, exportMultiRunCsv } from "./api";
+import { exportAprioriCsv, exportMultiRunCsv } from "../api";
 
 const CSV_FIELD_GROUPS = [
   { key: "runId", label: "Run ID" },

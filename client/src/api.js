@@ -1,5 +1,15 @@
+import { cached, invalidateRun, clearCache } from "./apiCache";
+
 const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 const ACCESS_TOKEN_STORAGE_KEY = "vppsports_access_token";
+
+const TTL = {
+  run: 5 * 60 * 1000,
+  sensors: 10 * 60 * 1000,
+  raw: 10 * 60 * 1000,
+  trims: 5 * 60 * 1000,
+  metrics: 10 * 60 * 1000,
+};
 
 let accessToken = null;
 let onAuthFailure = null;
@@ -22,6 +32,7 @@ export function setAccessToken(token) {
     window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, accessToken);
   } else {
     window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+    clearCache();
   }
 }
 
@@ -104,11 +115,11 @@ async function request(path, options = {}, retry = true) {
   if (!response.ok) {
     const payload = await parseResponse(response);
     const message =
-      typeof payload === "string"
-        ? payload
-        : payload?.error
-          ? `${payload?.message || `Request failed (${response.status})`}: ${payload.error}`
-          : payload?.message || `Request failed (${response.status})`;
+        typeof payload === "string"
+            ? payload
+            : payload?.error
+                ? `${payload?.message || `Request failed (${response.status})`}: ${payload.error}`
+                : payload?.message || `Request failed (${response.status})`;
     throw new Error(message);
   }
 
@@ -128,9 +139,9 @@ export async function login(username, password) {
   if (!response.ok) {
     const payload = await parseResponse(response);
     const message =
-      typeof payload === "string"
-        ? payload
-        : payload?.message || "Login failed";
+        typeof payload === "string"
+            ? payload
+            : payload?.message || "Login failed";
     throw new Error(message);
   }
 
@@ -188,40 +199,48 @@ export async function fetchRuns(dateFrom, dateTo) {
 }
 
 export async function fetchSelectedRun(runId) {
-  return request(`/run/${runId}`);
+  return cached(`run:${runId}:run`, TTL.run, () => request(`/run/${runId}`));
 }
 
 export async function updateRunLabels(runId, labels) {
-  return request(`/run/${runId}/labels`, {
+  const result = await request(`/run/${runId}/labels`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ labels }),
   });
+  invalidateRun(runId);
+  return result;
 }
 
 export async function fetchRunTrims(runId) {
-  return request(`/run/${runId}/trims`, {
-    method: "GET",
-    headers: { "Content-Type": "application/json" },
-  });
+  return cached(`run:${runId}:trims`, TTL.trims, () =>
+      request(`/run/${runId}/trims`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      }),
+  );
 }
 
 export async function updateRunTrims(runId, trims) {
-  return request(`/run/${runId}/trims`, {
+  const result = await request(`/run/${runId}/trims`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ trims }),
   });
+  invalidateRun(runId);
+  return result;
 }
 
 export async function updateRunMetadata(runId, fields) {
-  return request(`/run/${runId}/metadata`, {
+  const result = await request(`/run/${runId}/metadata`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(fields),
   });
+  invalidateRun(runId);
+  return result;
 }
 
 export async function fetchRunVideo(videoName, retry = true) {
@@ -253,16 +272,16 @@ export async function fetchRunVideo(videoName, retry = true) {
   if (!response.ok) {
     const payload = await parseResponse(response);
     const message =
-      typeof payload === "string"
-        ? payload
-        : payload?.message || "Failed to fetch video";
+        typeof payload === "string"
+            ? payload
+            : payload?.message || "Failed to fetch video";
     throw new Error(message);
   }
 
   return response;
 }
 
-export async function checkRunVideoExists(videoName, retry = true) {
+async function checkRunVideoExistsUncached(videoName, retry = true) {
   if (!videoName) return false;
 
   const headers = {};
@@ -279,7 +298,7 @@ export async function checkRunVideoExists(videoName, retry = true) {
   if (response.status === 401 && retry) {
     try {
       await refreshAccessToken();
-      return checkRunVideoExists(videoName, false);
+      return checkRunVideoExistsUncached(videoName, false);
     } catch (error) {
       notifyAuthFailure();
       throw error;
@@ -298,13 +317,20 @@ export async function checkRunVideoExists(videoName, retry = true) {
   if (!response.ok) {
     const payload = await parseResponse(response);
     const message =
-      typeof payload === "string"
-        ? payload
-        : payload?.message || "Failed to check video availability";
+        typeof payload === "string"
+            ? payload
+            : payload?.message || "Failed to check video availability";
     throw new Error(message);
   }
 
   return true;
+}
+
+export function checkRunVideoExists(videoName) {
+  if (!videoName) return Promise.resolve(false);
+  return cached(`run:${videoName}:video-exists`, TTL.sensors, () =>
+      checkRunVideoExistsUncached(videoName),
+  );
 }
 
 export async function uploadSensorDataBin(file, options = {}) {
@@ -335,13 +361,15 @@ async function uploadSensorDataFile(file, options = {}) {
   const query = params.toString();
   const uploadUrl = `/run/upload${query ? `?${query}` : ""}`;
 
-  return request(uploadUrl, {
+  const result = await request(uploadUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/octet-stream",
     },
     body: await file.arrayBuffer(),
   });
+  if (options.runId) invalidateRun(options.runId);
+  return result;
 }
 
 export async function uploadRunVideo(file, runId) {
@@ -353,19 +381,23 @@ export async function uploadRunVideo(file, runId) {
   const query = params.toString();
   const uploadUrl = `/video/upload${query ? `?${query}` : ""}`;
 
-  return request(uploadUrl, {
+  const result = await request(uploadUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/octet-stream",
     },
     body: await file.arrayBuffer(),
   });
+  if (runId) invalidateRun(runId);
+  return result;
 }
 
 export async function deleteRun(runId) {
-  return request(`/run/${runId}`, {
+  const result = await request(`/run/${runId}`, {
     method: "DELETE",
   });
+  invalidateRun(runId);
+  return result;
 }
 
 export async function exportRunArff(runId, variant = "features", points) {
@@ -397,11 +429,11 @@ export async function exportRunArff(runId, variant = "features", points) {
   if (!response.ok) {
     const payload = await parseResponse(response);
     const message =
-      typeof payload === "string"
-        ? payload
-        : payload?.error
-          ? `${payload?.message || `Request failed (${response.status})`}: ${payload.error}`
-          : payload?.message || `Request failed (${response.status})`;
+        typeof payload === "string"
+            ? payload
+            : payload?.error
+                ? `${payload?.message || `Request failed (${response.status})`}: ${payload.error}`
+                : payload?.message || `Request failed (${response.status})`;
     throw new Error(message);
   }
 
@@ -436,11 +468,11 @@ export async function exportAprioriCsv(runIds, numBins) {
   if (!response.ok) {
     const payload = await parseResponse(response);
     const message =
-      typeof payload === "string"
-        ? payload
-        : payload?.error
-          ? `${payload?.message || `Request failed (${response.status})`}: ${payload.error}`
-          : payload?.message || `Request failed (${response.status})`;
+        typeof payload === "string"
+            ? payload
+            : payload?.error
+                ? `${payload?.message || `Request failed (${response.status})`}: ${payload.error}`
+                : payload?.message || `Request failed (${response.status})`;
     throw new Error(message);
   }
 
@@ -476,11 +508,11 @@ export async function exportMultiRunCsv(runIds, fields) {
   if (!response.ok) {
     const payload = await parseResponse(response);
     const message =
-      typeof payload === "string"
-        ? payload
-        : payload?.error
-          ? `${payload?.message || `Request failed (${response.status})`}: ${payload.error}`
-          : payload?.message || `Request failed (${response.status})`;
+        typeof payload === "string"
+            ? payload
+            : payload?.error
+                ? `${payload?.message || `Request failed (${response.status})`}: ${payload.error}`
+                : payload?.message || `Request failed (${response.status})`;
     throw new Error(message);
   }
 
@@ -494,7 +526,6 @@ export async function exportMultiRunCsv(runIds, fields) {
     fileName: fileNameMatch?.[1] || `multi-run-${dateStamp}.csv`,
   };
 }
-
 
 export async function createUser(payload) {
   return request("/auth/users", {
@@ -631,19 +662,23 @@ export async function saveVideoSyncOffset(runId, videoSyncOffset) {
 }
 
 export async function fetchFilters() {
-  return request("/filters", { method: "GET" });
+  return cached("global:filters", TTL.sensors, () => request("/filters", { method: "GET" }));
 }
 
 export async function uploadFilter(filename, code) {
-  return request("/filters", {
+  const result = await request("/filters", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ filename, code }),
   });
+  clearCache();
+  return result;
 }
 
 export async function deleteFilter(id) {
-  return request(`/filters/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const result = await request(`/filters/${encodeURIComponent(id)}`, { method: "DELETE" });
+  clearCache();
+  return result;
 }
 
 export async function fetchPluginAssignments(contextId, pluginType) {
@@ -669,24 +704,30 @@ export async function resetPluginAssignments(contextId, pluginType) {
 }
 
 export async function fetchRideMetrics(runId) {
-  try {
-    return await request(`/run/${encodeURIComponent(runId)}/ride-metrics`, { method: "GET" });
-  } catch (error) {
-    if (error instanceof UnauthorizedError) throw error;
-    if (/\b404\b|not found/i.test(error.message)) return null;
-    throw error;
-  }
+  return cached(`run:${runId}:metrics`, TTL.metrics, async () => {
+    try {
+      return await request(`/run/${encodeURIComponent(runId)}/ride-metrics`, { method: "GET" });
+    } catch (error) {
+      if (error instanceof UnauthorizedError) throw error;
+      if (/\b404\b|not found/i.test(error.message)) return null;
+      throw error;
+    }
+  });
 }
 
 export async function fetchRunSensors(runId) {
-  const sensors = await request(`/run/${encodeURIComponent(runId)}/sensor`, { method: "GET" });
-  return Array.isArray(sensors) ? sensors : [];
+  return cached(`run:${runId}:sensors`, TTL.sensors, async () => {
+    const sensors = await request(`/run/${encodeURIComponent(runId)}/sensor`, { method: "GET" });
+    return Array.isArray(sensors) ? sensors : [];
+  });
 }
 
 export async function fetchSensorRaw(runId, sensorId) {
-  const data = await request(
-      `/run/${encodeURIComponent(runId)}/sensor/${encodeURIComponent(sensorId)}/data?mode=raw`,
-      { method: "GET" }
-  );
-  return Array.isArray(data?.readings) ? data.readings : [];
+  return cached(`run:${runId}:raw:${sensorId}`, TTL.raw, async () => {
+    const data = await request(
+        `/run/${encodeURIComponent(runId)}/sensor/${encodeURIComponent(sensorId)}/data?mode=raw`,
+        { method: "GET" },
+    );
+    return Array.isArray(data?.readings) ? data.readings : [];
+  });
 }

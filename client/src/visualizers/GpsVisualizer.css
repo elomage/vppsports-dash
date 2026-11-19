@@ -1,0 +1,8 @@
+.gps-viz { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 200px; }
+.gps-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; }
+.gps-close { background: none; border: 0; cursor: pointer; color: inherit; opacity: .7; }
+.gps-close:hover { opacity: 1; }
+.gps-body { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 0 10px 10px; }
+.gps-map { flex: 1; min-height: 220px; border-radius: 6px; z-index: 0; }
+.gps-msg { margin: auto; text-align: center; font-size: .9rem; opacity: .75; }
+.gps-msg.is-error { color: #dc2626; opacity: 1; }

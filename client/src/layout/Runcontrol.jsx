@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { fetchRuns, fetchSelectedRun } from './api';
+import { fetchRuns, fetchSelectedRun } from "../api";
 import './Runcontrol.css';
 
 const NONE = 'null';

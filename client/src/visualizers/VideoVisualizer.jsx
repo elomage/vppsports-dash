@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { fetchRunVideo, fetchRunViewState, saveVideoSyncOffset } from './api';
+import { fetchRunVideo, fetchRunViewState, saveVideoSyncOffset } from "../api";
 
 const findClosestTimestampIndex = (timestamps, target) => {
   if (!Array.isArray(timestamps) || timestamps.length === 0) return 0;

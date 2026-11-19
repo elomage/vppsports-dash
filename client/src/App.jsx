@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import './App.css'
-import Dashboard from './Dashboard'
-import RunControl from './Runcontrol'
+import Dashboard from './dashboard/Dashboard'
+import RunControl from './layout/Runcontrol'
 import UploadSensorData from "./UploadSensorData"
-import AuthPage from './AuthPage'
+import AuthPage from './auth/AuthPage'
 import AdminPanel from "./AdminPanel"
 import { fetchRuns, initializeSession, logout, setAuthFailureHandler } from './api'
 
