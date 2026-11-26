@@ -2924,6 +2924,36 @@ sensorRouter.get("/:sensorid", async (req, res) => {
   }
 });
 
+sensorRouter.delete("/:sensorid", async (req, res) => {
+  try {
+    const runid = req.params.runid;
+    const authorizedRun = await findRunForUser(runid, req.user).catch(() => null);
+    if (!authorizedRun) {
+      return res.status(404).json({ message: "Run not found." });
+    }
+    if (
+        !canAdministerContext(req.user, authorizedRun.context, authorizedRun.contextId)
+    ) {
+      return res
+          .status(403)
+          .json({ message: "Not allowed to delete sensor data of this run." });
+    }
+    const sensorid = Number.parseInt(req.params.sensorid, 10);
+    if (!Number.isFinite(sensorid)) {
+      return res.status(400).json({ message: "Invalid sensor id." });
+    }
+    const result = await runService.deleteRunSensor(runid, sensorid);
+    return res
+        .status(200)
+        .json({ message: "Sensor data deleted.", ...result });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to delete sensor data.",
+      error: error.message,
+    });
+  }
+});
+
 //TODO: Implement the filtering passing and array of filters to use and recieving filtered data
 sensorDataRouter.get("/data", async (req, res) => {
   try {

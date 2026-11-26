@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+    deleteRunSensor,
     fetchRunSensors,
     fetchRunTrims,
     fetchSelectedRun,
@@ -113,29 +114,20 @@ const readingsToSeries = (readings) => {
     return { t: tt, x: x.slice(0, used), y: y.slice(0, used), z: z.slice(0, used), unit: detectTimeUnit(tt) };
 };
 
-const extractRunId = (response) => {
-    const candidates = [
-        response?.createdRun?._id,
-        response?.createdRun?.id,
-        typeof response?.createdRun === "string" ? response.createdRun : null,
-        response?.run?._id,
-        response?.run?.id,
-        response?.runId,
-        response?._id,
-    ];
-    return candidates.find((value) => typeof value === "string" && value) || "";
+const axisNames = (axes) =>
+    Array.isArray(axes) && axes.length === 3 ? axes.map((a) => String(a)) : ["x", "y", "z"];
+
+const withHeader = (csv, axes) => {
+    const newline = csv.indexOf("\n");
+    return `timestamp,${axisNames(axes).join(",")}${csv.slice(newline)}`;
 };
 
-const downloadText = (name, text) => {
-    const blob = new Blob([text], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = name;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+const seriesToCsv = (series, axes) => {
+    const rows = [`timestamp,${axisNames(axes).join(",")}`];
+    for (let i = 0; i < series.t.length; i++) {
+        rows.push(`${series.t[i]},${series.x[i]},${series.y[i]},${series.z[i]}`);
+    }
+    return `${rows.join("\n")}\n`;
 };
 
 const FilterControls = ({ idPrefix, title, cfg, onChange }) => {
@@ -216,12 +208,13 @@ const FilterControls = ({ idPrefix, title, cfg, onChange }) => {
     );
 };
 
-const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
+const RideProcessingForm = ({ runs }) => {
     const [runId, setRunId] = useState("");
     const [sensors, setSensors] = useState([]);
     const [accelSensorId, setAccelSensorId] = useState("");
     const [gyroSensorId, setGyroSensorId] = useState("");
     const [source, setSource] = useState(null);
+    const [reloadKey, setReloadKey] = useState(0);
     const [loadState, setLoadState] = useState(IDLE_LOAD);
     const [timeUnit, setTimeUnit] = useState("auto");
     const [accelCfg, setAccelCfg] = useState(ACCEL_DEFAULTS);
@@ -229,22 +222,11 @@ const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
     const [trimMode, setTrimMode] = useState("auto");
     const [manualStart, setManualStart] = useState("");
     const [manualEnd, setManualEnd] = useState("");
-    const [resampleGyro, setResampleGyro] = useState(true);
-    const [includeGyro, setIncludeGyro] = useState(true);
+    const [saveFiltered, setSaveFiltered] = useState(true);
     const [axis, setAxis] = useState("ax");
     const [computed, setComputed] = useState(IDLE_COMPUTED);
-    const [copyName, setCopyName] = useState("");
-    const [copyContext, setCopyContext] = useState("");
     const [status, setStatus] = useState(IDLE);
     const [busy, setBusy] = useState("");
-
-    const contexts = useMemo(
-        () =>
-            Array.isArray(currentUser?.contexts)
-                ? currentUser.contexts.filter((c) => c?.id && c?.name)
-                : [],
-        [currentUser],
-    );
 
     const safeRuns = useMemo(() => (Array.isArray(runs) ? runs : []), [runs]);
     const accelClean = useMemo(() => normalizeFilter(accelCfg, ACCEL_DEFAULTS), [accelCfg]);
@@ -327,7 +309,7 @@ const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
         return () => {
             cancelled = true;
         };
-    }, [runId, accelSensorId, gyroSensorId]);
+    }, [runId, accelSensorId, gyroSensorId, reloadKey]);
 
     useEffect(() => {
         if (!source) {
@@ -480,16 +462,9 @@ const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
     const selectedRun = safeRuns.find((run) => run._id === runId);
     const runLabel = selectedRun?.name || runId;
     const ready = computed.status === "ready" && Boolean(computed.result) && Boolean(trim?.valid);
-    const canCut = ready && trimMode !== "none" && !busy;
-    const canCopy = ready && Boolean(copyName.trim()) && Boolean(copyContext) && !busy;
-
-    const handleRunChange = (id) => {
-        setRunId(id);
-        const found = safeRuns.find((run) => run._id === id);
-        setCopyName(found ? `${found.name || `Run ${found._id}`} (processed)` : "");
-        const match = contexts.find((c) => String(c.id) === String(found?.contextId));
-        setCopyContext(match ? match.id : "");
-    };
+    const filterActive = accelClean.type !== "none" || gyroClean.type !== "none";
+    const willSaveFiltered = filterActive && saveFiltered;
+    const canApply = ready && !busy && (trimMode !== "none" || willSaveFiltered);
 
     const selectTrimMode = (next) => {
         setStatus(IDLE);
@@ -503,23 +478,49 @@ const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
 
     const handleClear = () => {
         setRunId("");
-        setCopyName("");
-        setCopyContext("");
         setStatus(IDLE);
     };
 
-    const handleDownload = (kind) => {
-        if (!ready) return;
-        const out = buildTrimmedCsv(computed.result, trim.start, trim.end, resampleGyro);
-        const name = safeName(runLabel);
-        if (kind === "accel") downloadText(`${name}_trimmed_accel.csv`, out.accel);
-        else if (out.gyro) downloadText(`${name}_trimmed_gyro.csv`, out.gyro);
+    const replaceSensors = async () => {
+        const n = computed.result.t.length;
+        const out = buildTrimmedCsv(computed.result, 0, n, false, true);
+        const jobs = [];
+        if (accelClean.type !== "none" && accelSensorId !== "") {
+            jobs.push({ type: "accelerometer", sensorId: Number(accelSensorId), csv: out.accel, backup: source.accel });
+        }
+        if (gyroClean.type !== "none" && out.gyro && gyroSensorId !== "" && source.gyro) {
+            jobs.push({ type: "gyroscope", sensorId: Number(gyroSensorId), csv: out.gyro, backup: source.gyro });
+        }
+        for (const job of jobs) {
+            const meta = sensors.find((s) => Number(s.sensorId) === job.sensorId);
+            const options = {
+                runId,
+                sensorType: job.type,
+                sensorId: job.sensorId,
+                sensorName: String(meta?.name || "").trim(),
+            };
+            const fileName = `${safeName(runLabel)}_${job.type}.csv`;
+            await deleteRunSensor(runId, job.sensorId);
+            try {
+                await uploadSensorDataCsv(
+                    new File([withHeader(job.csv, meta?.axes)], fileName, { type: "text/csv" }),
+                    options,
+                );
+            } catch (error) {
+                await uploadSensorDataCsv(
+                    new File([seriesToCsv(job.backup, meta?.axes)], fileName, { type: "text/csv" }),
+                    options,
+                );
+                throw error;
+            }
+        }
+        return jobs.length;
     };
 
-    const handleApplyCut = async () => {
-        if (!canCut) return;
-        setBusy("cut");
-        setStatus({ type: "info", message: "Saving the cut…" });
+    const handleApply = async () => {
+        if (!canApply) return;
+        setBusy("apply");
+        setStatus({ type: "info", message: "Saving…" });
         try {
             const ts = source.accel.t;
             const n = ts.length;
@@ -537,71 +538,46 @@ const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
             if (end < n) {
                 newTrims.push({ startTimestamp: (ts[end - 1] + ts[end]) / 2, endTimestamp: lastTs });
             }
-            if (newTrims.length === 0) {
-                setStatus({ type: "info", message: "Nothing to cut: the window already covers the whole ride." });
+
+            let replaced = 0;
+            if (willSaveFiltered) {
+                replaced = await replaceSensors();
+            }
+
+            if (newTrims.length > 0) {
+                let existing = run?.trims;
+                if (!Array.isArray(existing)) {
+                    const fetched = await fetchRunTrims(runId);
+                    existing = Array.isArray(fetched) ? fetched : fetched?.trims;
+                }
+                await updateRunTrims(runId, [...normalizeTrims(existing), ...newTrims]);
+            }
+
+            if (newTrims.length === 0 && replaced === 0) {
+                setStatus({ type: "info", message: "Nothing to save: the window covers the whole ride and no filter is active." });
                 return;
             }
 
-            let existing = run?.trims;
-            if (!Array.isArray(existing)) {
-                const fetched = await fetchRunTrims(runId);
-                existing = Array.isArray(fetched) ? fetched : fetched?.trims;
-            }
-            await updateRunTrims(runId, [...normalizeTrims(existing), ...newTrims]);
-            setStatus({
-                type: "success",
-                message: `Cut applied to "${runLabel}". Select the run again in the dashboard to see it. You can undo it in the graph under Trim Data.`,
-            });
-        } catch (error) {
-            setStatus({
-                type: "error",
-                message: error instanceof Error ? error.message : "Could not save the cut.",
-            });
-        } finally {
-            setBusy("");
-        }
-    };
+            const parts = [];
+            if (replaced > 0) parts.push(`${replaced} sensor${replaced > 1 ? "s" : ""} replaced with filtered data`);
+            if (newTrims.length > 0) parts.push("cut applied");
 
-    const handleSaveCopy = async () => {
-        if (!canCopy) return;
-        setBusy("copy");
-        setStatus({ type: "info", message: "Uploading the processed copy…" });
-        try {
-            const out = buildTrimmedCsv(computed.result, trim.start, trim.end, resampleGyro);
-            const name = safeName(runLabel);
-            const accelUpload = new File([out.accel], `${name}_accel.csv`, { type: "text/csv" });
-            const first = await uploadSensorDataCsv(accelUpload, {
-                name: copyName.trim(),
-                contextId: copyContext,
-                sensorType: "accelerometer",
-            });
-            const createdRun = first?.createdRun ? first : null;
-            const newRunId = extractRunId(first);
-            const withGyro = includeGyro && Boolean(out.gyro);
-
-            if (withGyro) {
-                if (!newRunId) {
-                    if (createdRun) onRunCreated?.(createdRun);
-                    setStatus({
-                        type: "error",
-                        message:
-                            "The accelerometer data was uploaded and the run was created, but the server did not return the run id, so the gyroscope was not uploaded.",
-                    });
-                    return;
-                }
-                const gyroUpload = new File([out.gyro], `${name}_gyro.csv`, { type: "text/csv" });
-                await uploadSensorDataCsv(gyroUpload, { runId: newRunId, sensorType: "gyroscope" });
+            const refreshed = await fetchRunSensors(runId);
+            setSensors(Array.isArray(refreshed) ? refreshed : []);
+            if (replaced > 0) {
+                setAccelCfg(ACCEL_DEFAULTS);
+                setGyroCfg(GYRO_DEFAULTS);
+                setReloadKey((value) => value + 1);
             }
 
             setStatus({
                 type: "success",
-                message: `New run "${copyName.trim()}" created with processed accelerometer${withGyro ? " and gyroscope" : ""} data.`,
+                message: `"${runLabel}": ${parts.join(" and ")}. Select the run again in the dashboard to see it. The cut can be undone under Trim Data in the graph.`,
             });
-            if (createdRun) onRunCreated?.(createdRun);
         } catch (error) {
             setStatus({
                 type: "error",
-                message: error instanceof Error ? error.message : "Upload failed. Try again.",
+                message: error instanceof Error ? error.message : "Could not save.",
             });
         } finally {
             setBusy("");
@@ -615,7 +591,7 @@ const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
                 <div className="rp-body">
                     <div className="rp-field">
                         <label className="rp-label" htmlFor="rp-run">Run</label>
-                        <RunSelect id="rp-run" runs={safeRuns} value={runId} onChange={handleRunChange} />
+                        <RunSelect id="rp-run" runs={safeRuns} value={runId} onChange={setRunId} />
                     </div>
 
                     {runId && sensors.length > 0 && (
@@ -739,16 +715,6 @@ const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
                             )}
                             {trim && !trim.valid && <p className="rp-meta is-warn">{trim.message}</p>}
                             {detectedText && <p className="rp-meta">{detectedText}</p>}
-                            {hasGyro && (
-                                <label className="rp-check">
-                                    <input
-                                        type="checkbox"
-                                        checked={resampleGyro}
-                                        onChange={(e) => setResampleGyro(e.target.checked)}
-                                    />
-                                    <span>Resample the gyroscope to the accelerometer timeline in the copy</span>
-                                </label>
-                            )}
                         </div>
                     </fieldset>
 
@@ -798,86 +764,25 @@ const RideProcessingForm = ({ currentUser, runs, onRunCreated }) => {
                         <legend className="us-legend">Save result</legend>
                         <div className="rp-body">
                             <div className="rp-card">
-                                <div className="rp-card-title">Apply cut to this run</div>
+                                <div className="rp-card-title">Apply to this run</div>
                                 <p className="rp-meta">
-                                    Hides everything outside the window in the dashboard. The uploaded data is not changed and you can
-                                    undo it under Trim Data in the graph. Filters are not stored.
+                                    Hides everything outside the window in the dashboard. The cut can be undone under Trim Data
+                                    in the graph.
                                 </p>
-                                <div className="rp-actions">
-                                    <button className="us-btn us-btn--primary" type="button" onClick={handleApplyCut} disabled={!canCut}>
-                                        {busy === "cut" ? "Saving…" : "Apply cut to run"}
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div className="rp-card">
-                                <div className="rp-card-title">Save filtered copy as a new run</div>
-                                <p className="rp-meta">
-                                    Uploads the filtered and cut data as a new run. The original run is not changed.
-                                </p>
-                                <div className="rp-field">
-                                    <label className="rp-label" htmlFor="rp-copy-name">New run name</label>
-                                    <input
-                                        id="rp-copy-name"
-                                        className="form-control"
-                                        type="text"
-                                        value={copyName}
-                                        maxLength={120}
-                                        onChange={(e) => setCopyName(e.target.value)}
-                                    />
-                                </div>
-                                <div className="rp-field" role="radiogroup" aria-label="Context">
-                                    <span className="rp-label">Context</span>
-                                    {contexts.length === 0 ? (
-                                        <p className="rp-meta">No contexts are assigned to your account. Ask an admin to add one.</p>
-                                    ) : (
-                                        <div className="us-chips">
-                                            {contexts.map((c) => (
-                                                <label key={c.id} className={`us-chip ${copyContext === c.id ? "is-on" : ""}`}>
-                                                    <input
-                                                        type="radio"
-                                                        name="rp-context"
-                                                        checked={copyContext === c.id}
-                                                        onChange={() => setCopyContext(c.id)}
-                                                    />
-                                                    {c.name}
-                                                </label>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                                {hasGyro && (
+                                {filterActive && (
                                     <label className="rp-check">
                                         <input
                                             type="checkbox"
-                                            checked={includeGyro}
-                                            onChange={(e) => setIncludeGyro(e.target.checked)}
+                                            checked={saveFiltered}
+                                            onChange={(e) => setSaveFiltered(e.target.checked)}
                                         />
-                                        <span>Include the gyroscope</span>
+                                        <span>Replace the sensor data in this run with the filtered signal</span>
                                     </label>
                                 )}
                                 <div className="rp-actions">
-                                    <button className="us-btn us-btn--primary" type="button" onClick={handleSaveCopy} disabled={!canCopy}>
-                                        {busy === "copy" ? "Uploading…" : "Save copy as new run"}
+                                    <button className="us-btn us-btn--primary" type="button" onClick={handleApply} disabled={!canApply}>
+                                        {busy === "apply" ? "Saving…" : "Apply to run"}
                                     </button>
-                                    <button
-                                        className="us-btn us-btn--ghost"
-                                        type="button"
-                                        onClick={() => handleDownload("accel")}
-                                        disabled={!ready || Boolean(busy)}
-                                    >
-                                        Download accel CSV
-                                    </button>
-                                    {hasGyro && (
-                                        <button
-                                            className="us-btn us-btn--ghost"
-                                            type="button"
-                                            onClick={() => handleDownload("gyro")}
-                                            disabled={!ready || Boolean(busy)}
-                                        >
-                                            Download gyro CSV
-                                        </button>
-                                    )}
                                 </div>
                             </div>
                         </div>

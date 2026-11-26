@@ -731,3 +731,12 @@ export async function fetchSensorRaw(runId, sensorId) {
     return Array.isArray(data?.readings) ? data.readings : [];
   });
 }
+
+export async function deleteRunSensor(runId, sensorId) {
+  const result = await request(
+      `/run/${encodeURIComponent(runId)}/sensor/${encodeURIComponent(sensorId)}`,
+      { method: "DELETE" },
+  );
+  invalidateRun(runId);
+  return result;
+}

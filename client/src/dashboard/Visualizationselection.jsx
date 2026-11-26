@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './Visualizationselection.css';
 import { checkRunVideoExists, fetchPluginAssignments } from "../api";
+import { DEFAULT_LAYOUT, loadLayout, saveLayout } from './dashboardState';
 
 const componentsMap = {
     info: React.lazy(() => import("../visualizers/Infovisualizer")),
@@ -28,7 +29,7 @@ const WRAPPER_CLASS = {
     gps: 'gps-wrapper',
 };
 
-const CHARTS_PER_ROW = 2;
+const ITEMS_PER_ROW = 2;
 
 function buildDisplayItems(components) {
     const videoComp = components.find((c) => c.type === 'video');
@@ -47,15 +48,10 @@ function buildDisplayItems(components) {
 }
 
 function buildRows(items) {
-    const charts = items.filter((i) => i.type === 'echart');
-    if (charts.length <= CHARTS_PER_ROW) return items.length ? [items] : [];
-
-    const others = items.filter((i) => i.type !== 'echart');
     const rows = [];
-    for (let i = 0; i < charts.length; i += CHARTS_PER_ROW) {
-        rows.push(charts.slice(i, i + CHARTS_PER_ROW));
+    for (let i = 0; i < items.length; i += ITEMS_PER_ROW) {
+        rows.push(items.slice(i, i + ITEMS_PER_ROW));
     }
-    if (others.length) rows.push(others);
     return rows;
 }
 
@@ -68,13 +64,13 @@ function isTypeEnabled(vizPlugins, type) {
 const newId = () => Date.now() + Math.random();
 
 export default function ComponentSelector({ selectedRun, effectiveTimestamps, sliderValue, setSliderValue, onEffectiveTimestampsChange }) {
-    const [selectedComponent, setSelectedComponent] = useState([
-        { id: 1, type: 'echart', flexGrow: 1 },
-        { id: 2, type: 'video', flexGrow: 1 },
-    ]);
+    const [stored] = useState(() => loadLayout());
+    const [selectedComponent, setSelectedComponent] = useState(() => stored?.layout ?? DEFAULT_LAYOUT);
     const [hasVideoForRun, setHasVideoForRun] = useState(true);
     const [vizPlugins, setVizPlugins] = useState(null);
     const [enabledFilterIds, setEnabledFilterIds] = useState(null);
+    const metricsRunRef = useRef(stored?.runId ?? null);
+    const videoRunRef = useRef(stored?.runId ?? null);
 
     const addComponent = (type) => {
         setSelectedComponent((prev) => {
@@ -84,6 +80,13 @@ export default function ComponentSelector({ selectedRun, effectiveTimestamps, sl
     };
 
     useEffect(() => {
+        saveLayout(selectedComponent, selectedRun?._id ?? null);
+    }, [selectedComponent, selectedRun?._id]);
+
+    useEffect(() => {
+        const id = selectedRun?._id ?? null;
+        if (metricsRunRef.current === id) return;
+        metricsRunRef.current = id;
         setSelectedComponent((prev) => prev.filter((c) => c.type !== 'metrics'));
     }, [selectedRun?._id]);
 
@@ -113,10 +116,12 @@ export default function ComponentSelector({ selectedRun, effectiveTimestamps, sl
             try {
                 const hasVideo = await checkRunVideoExists(selectedRun._id);
                 if (isCancelled) return;
+                const runChanged = videoRunRef.current !== selectedRun._id;
+                videoRunRef.current = selectedRun._id;
                 setHasVideoForRun(hasVideo);
                 if (!hasVideo) {
                     setSelectedComponent((prev) => prev.filter((c) => c.type !== 'video'));
-                } else {
+                } else if (runChanged) {
                     setSelectedComponent((prev) =>
                         prev.some((c) => c.type === 'video')
                             ? prev

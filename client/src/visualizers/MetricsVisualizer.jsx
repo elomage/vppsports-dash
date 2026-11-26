@@ -4,37 +4,16 @@ import { EChart, Card, Kpis } from './metrics/ui';
 import SegmentsTab from './metrics/SegmentsTab';
 import { baseGrid, dashed, axisText } from './metrics/chartTheme';
 import {
-    G, fmt, kpi, sortedCopy, percentile, mean, std, rms, cv,
+    G, fmt, kpi, sortedCopy, percentile, mean, rms,
     sliceMax, sliceMin, absMax, medianDt, smooth, decimate, nearestIdx,
 } from './metrics/stats';
 
-const SIDE_COLOR = { '+': '#5470c6', '−': '#ee6666' };
-
-const SECTOR_METRICS = {
-    lat: 'Lateral load (P95 |ay|, g)',
-    long: 'Longitudinal accel (mean ax, g)',
-    jerk: 'Jerk RMS (g/s)',
-    vib: 'Vibration (high-pass RMS, g)',
-    peak: 'Peak g-force (g)',
-    active: 'Time in load events (%)',
-    steer: 'Steering activity (reversals/s)',
-};
-
 const TABS = [
     ['overview', 'Overview'],
-    ['events', 'Events'],
-    ['sectors', 'Sectors'],
     ['segments', 'Segments'],
     ['smooth', 'Smoothness'],
     ['steer', 'Steering'],
 ];
-
-
-
-
-
-
-
 
 const corr = (a, b) => {
     const ma = mean(a);
@@ -50,10 +29,6 @@ const corr = (a, b) => {
     return num / Math.sqrt(da * db);
 };
 
-
-
-
-
 const rollingRms = (arr, w) => {
     const pre = new Float64Array(arr.length + 1);
     for (let i = 0; i < arr.length; i++) pre[i + 1] = pre[i] + arr[i] * arr[i];
@@ -64,10 +39,6 @@ const rollingRms = (arr, w) => {
         return Math.sqrt((pre[b] - pre[a]) / (b - a));
     });
 };
-
-
-
-
 
 const steerReversals = (vals, threshold) => {
     let last = 0;
@@ -192,10 +163,9 @@ const toRows = (readings, trims) => {
 const sensorText = (s) => `${s?.sensorType || ''} ${s?.name || ''}`;
 const pickSensor = (sensors, regex) => sensors.find((s) => regex.test(sensorText(s)));
 
-const detectEvents = ({ t, gm, gmS, ay, jerk, dt, base, p95 }) => {
-    const n = t.length;
+const detectLoadMask = ({ n, gmS, dt, base, p95 }) => {
     const inEvent = new Uint8Array(n);
-    if (!dt || p95 - base < 0.05) return { events: [], inEvent, threshold: NaN };
+    if (!dt || p95 - base < 0.05) return inEvent;
 
     const threshold = base + 0.4 * (p95 - base);
     const gapMax = Math.round(0.2 / dt);
@@ -220,55 +190,14 @@ const detectEvents = ({ t, gm, gmS, ay, jerk, dt, base, p95 }) => {
         else merged.push([sp[0], sp[1]]);
     }
 
-    const events = merged
+    merged
         .filter(([a, b]) => b - a + 1 >= minLen)
-        .map(([a, b], k) => {
+        .forEach(([a, b]) => {
             for (let i = a; i <= b; i++) inEvent[i] = 1;
-            const seg = gm.slice(a, b + 1);
-            const ayMean = mean(ay.slice(a, b + 1));
-            return {
-                id: k + 1,
-                start: t[a],
-                end: t[b],
-                dur: t[b] - t[a],
-                peak: sliceMax(gm, a, b + 1),
-                mean: mean(seg),
-                peakLat: absMax(ay, a, b + 1),
-                side: ayMean >= 0 ? '+' : '−',
-                jerk: rms(jerk.slice(a, b + 1)),
-            };
         });
 
-    return { events, inEvent, threshold };
+    return inEvent;
 };
-
-export function computeSectors(raw, count) {
-    const { n, t, ax, ay, gm, jerk, vib, inEvent, gyroT, gz, steerThr } = raw;
-    return Array.from({ length: count }, (_, k) => {
-        const a = Math.floor((k * n) / count);
-        const b = Math.max(a + 1, Math.floor(((k + 1) * n) / count));
-        const tA = t[a];
-        const tB = t[b - 1];
-        let act = 0;
-        for (let i = a; i < b; i++) act += inEvent[i];
-        const item = {
-            lat: percentile(sortedCopy(ay.slice(a, b).map(Math.abs)), 95),
-            long: mean(ax.slice(a, b)),
-            jerk: rms(jerk.slice(a, b)),
-            vib: rms(vib.slice(a, b)),
-            peak: sliceMax(gm, a, b),
-            active: (act / (b - a)) * 100,
-            steer: NaN,
-            label: `${fmt(tA, 1)}s`,
-        };
-        if (gyroT.length) {
-            const vals = gz.filter((_, i) => gyroT[i] >= tA && gyroT[i] <= tB);
-            item.steer = steerReversals(vals, steerThr) / Math.max(tB - tA, 1e-6);
-        }
-        return item;
-    });
-}
-
 
 export function computeRide(accRaw, gyroRaw) {
     if (!accRaw || accRaw.length < 50) return null;
@@ -299,15 +228,11 @@ export function computeRide(accRaw, gyroRaw) {
     const base = percentile(gmSorted, 50);
     const p95 = percentile(gmSorted, 95);
 
-    const { events, inEvent, threshold } = detectEvents({ t, gm, gmS, ay, jerk, dt, base, p95 });
-    const activeShare = (inEvent.reduce((a, b) => a + b, 0) / n) * 100;
+    const inEvent = detectLoadMask({ n, gmS, dt, base, p95 });
     const above2 = (gm.filter((v) => v > 2).length / n) * 100;
 
     let impulse = 0;
-    const cumulative = t.map((x, i) => {
-        impulse += Math.max(0, gm[i] - base) * (dt || 0);
-        return [x, impulse];
-    });
+    for (let i = 0; i < n; i++) impulse += Math.max(0, gm[i] - base) * (dt || 0);
 
     const w1 = Math.max(3, Math.round(rate));
     const jerkRoll = rollingRms(jerk, w1);
@@ -320,13 +245,6 @@ export function computeRide(accRaw, gyroRaw) {
     const dom = spectrum ? spectrum.filter((p) => p[0] >= 3).reduce((b, p) => (p[1] > b[1] ? p : b), [NaN, -1]) : null;
 
     const startEnd = Math.max(10, Math.floor(n * 0.1));
-
-    const peaks = events.map((e) => e.peak);
-    const durs = events.map((e) => e.dur);
-    const plusTime = events.filter((e) => e.side === '+').reduce((a, e) => a + e.dur, 0);
-    const totalEventTime = durs.reduce((a, b) => a + b, 0);
-    const topEvent = events.reduce((b, e) => (!b || e.peak > b.peak ? e : b), null);
-    const longest = events.reduce((b, e) => (!b || e.dur > b.dur ? e : b), null);
 
     const gyro = gyroRaw && gyroRaw.length > 50 ? gyroRaw : null;
     const gyroT = gyro ? gyro.map((r) => r[0] - t0) : [];
@@ -363,21 +281,7 @@ export function computeRide(accRaw, gyroRaw) {
             kpi('Peak decel', fmt(Math.abs(Math.min(0, sliceMin(axS, 0, n)))), 'g', 'amber'),
             kpi('Time above 2 g', fmt(above2, 1), '%', 'red'),
             kpi('Load impulse', fmt(impulse), 'g·s', 'red', 'Area of g-force above the resting level'),
-            kpi('Load events', String(events.length), '', 'blue'),
-            kpi('Time in events', fmt(activeShare, 0), '%', 'blue'),
-            kpi('Smoothness (jerk RMS)', fmt(rms(jerk)), 'g/s', 'green'),
             kpi('Sample rate', fs ? fmt(fs, 0) : '–', 'Hz', 'gray'),
-        ],
-        events: [
-            kpi('Events', String(events.length), '', 'blue'),
-            kpi('Mean duration', fmt(mean(durs)), 's', 'blue'),
-            kpi('Longest event', longest ? fmt(longest.dur) : '–', 's', 'blue', longest ? `Event #${longest.id}` : ''),
-            kpi('Mean peak load', fmt(mean(peaks)), 'g', 'red'),
-            kpi('Highest peak', topEvent ? fmt(topEvent.peak) : '–', 'g', 'red', topEvent ? `Event #${topEvent.id}` : ''),
-            kpi('Peak consistency (CV)', fmt(cv(peaks), 1), '%', 'purple', 'Lower means more repeatable peaks'),
-            kpi('Duration consistency (CV)', fmt(cv(durs), 1), '%', 'purple'),
-            kpi('Time on ay+ side', fmt(totalEventTime ? (plusTime / totalEventTime) * 100 : NaN, 0), '%', 'amber'),
-            kpi('Mean event jerk', fmt(mean(events.map((e) => e.jerk))), 'g/s', 'green'),
         ],
         smooth: [
             kpi('Jerk RMS', fmt(rms(jerk)), 'g/s', 'green'),
@@ -403,16 +307,10 @@ export function computeRide(accRaw, gyroRaw) {
         duration,
         hasGyro: !!gyro,
         kpis,
-        events,
-        threshold,
-        base,
         timeline: {
             gm: decimate(t.map((x, i) => [x, gm[i]]), 2500),
             ay: decimate(t.map((x, i) => [x, ay[i]]), 2500),
         },
-        gg: decimate(ax.map((x, i) => [x, ay[i]]), 3000),
-        hist: makeHist(gm, 30),
-        cumulative: decimate(cumulative, 1000),
         rolling: {
             jerk: decimate(t.map((x, i) => [x, jerkRoll[i]]), 800),
             vib: decimate(t.map((x, i) => [x, vibRoll[i]]), 800),
@@ -426,7 +324,7 @@ export function computeRide(accRaw, gyroRaw) {
     };
 }
 
-const timelineOption = (tl, events, threshold) => ({
+const timelineOption = (tl) => ({
     grid: baseGrid,
     legend: { top: 0, textStyle: axisText },
     tooltip: { trigger: 'axis', valueFormatter: (v) => fmt(v, 3) },
@@ -442,31 +340,9 @@ const timelineOption = (tl, events, threshold) => ({
             sampling: 'lttb',
             lineStyle: { width: 1.2 },
             color: '#5470c6',
-            markArea: {
-                silent: true,
-                itemStyle: { color: 'rgba(238,102,102,0.10)' },
-                data: events.map((e) => [{ xAxis: e.start }, { xAxis: e.end }]),
-            },
-            markLine: Number.isFinite(threshold)
-                ? {
-                    silent: true,
-                    symbol: 'none',
-                    lineStyle: { color: '#94a3b8', type: 'dashed' },
-                    label: { formatter: 'event threshold' },
-                    data: [{ yAxis: threshold }],
-                }
-                : undefined,
         },
         { name: 'lateral (ay)', type: 'line', data: tl.ay, showSymbol: false, sampling: 'lttb', lineStyle: { width: 1 }, color: '#ee6666' },
     ],
-});
-
-const ggOption = (gg) => ({
-    grid: baseGrid,
-    tooltip: { trigger: 'item', formatter: (p) => `ax ${fmt(p.value[0], 3)} g<br/>ay ${fmt(p.value[1], 3)} g` },
-    xAxis: { type: 'value', name: 'longitudinal ax (g)', nameLocation: 'middle', nameGap: 26, splitLine: dashed, scale: true },
-    yAxis: { type: 'value', name: 'lateral ay (g)', splitLine: dashed, scale: true },
-    series: [{ type: 'scatter', data: gg, symbolSize: 3, itemStyle: { color: 'rgba(84,112,198,0.35)' }, large: true }],
 });
 
 const histOption = (hist, xName, color = '#91cc75') => ({
@@ -475,102 +351,6 @@ const histOption = (hist, xName, color = '#91cc75') => ({
     xAxis: { type: 'category', data: hist.map((h) => fmt(h[0], 2)), name: xName, nameLocation: 'middle', nameGap: 26 },
     yAxis: { type: 'value', name: '% of samples', splitLine: dashed },
     series: [{ type: 'bar', data: hist.map((h) => h[1]), barCategoryGap: '8%', itemStyle: { color, borderRadius: [3, 3, 0, 0] } }],
-});
-
-const sectorOption = (slices, key) => {
-    const values = slices.map((s) => s[key]);
-    const avg = mean(values.filter(Number.isFinite));
-    return {
-        grid: baseGrid,
-        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v) => fmt(v, 3) },
-        xAxis: { type: 'category', data: slices.map((s) => s.label), name: 'ride time', nameLocation: 'middle', nameGap: 26 },
-        yAxis: { type: 'value', splitLine: dashed },
-        series: [
-            {
-                type: 'bar',
-                data: values.map((v) => ({
-                    value: Number.isFinite(v) ? v : null,
-                    itemStyle: { color: Number.isFinite(v) && v > avg * 1.25 ? '#ee6666' : '#5470c6', borderRadius: [4, 4, 0, 0] },
-                })),
-                markLine: {
-                    symbol: 'none',
-                    lineStyle: { color: '#6b7280', type: 'dashed' },
-                    label: { formatter: `avg ${fmt(avg, 3)}` },
-                    data: [{ yAxis: avg }],
-                },
-            },
-        ],
-    };
-};
-
-const cumulativeOption = (data) => ({
-    grid: baseGrid,
-    tooltip: { trigger: 'axis', valueFormatter: (v) => `${fmt(v, 2)} g·s` },
-    xAxis: { type: 'value', name: 's', splitLine: dashed },
-    yAxis: { type: 'value', name: 'g·s', splitLine: dashed },
-    series: [{ type: 'line', data, showSymbol: false, lineStyle: { width: 1.5 }, areaStyle: { opacity: 0.15 }, color: '#ee6666' }],
-});
-
-const eventsOption = (events) => {
-    const avg = mean(events.map((e) => e.peak));
-    return {
-        grid: baseGrid,
-        tooltip: {
-            trigger: 'axis',
-            axisPointer: { type: 'shadow' },
-            formatter: (p) => {
-                const e = events[p[0].dataIndex];
-                return `Event ${e.id} (ay${e.side})<br/>Peak ${fmt(e.peak)} g<br/>Mean ${fmt(e.mean)} g<br/>Duration ${fmt(e.dur)} s<br/>Start ${fmt(e.start, 1)} s`;
-            },
-        },
-        xAxis: { type: 'category', data: events.map((e) => `#${e.id}`), name: 'event', nameLocation: 'middle', nameGap: 26 },
-        yAxis: { type: 'value', name: 'peak g', splitLine: dashed },
-        series: [
-            {
-                type: 'bar',
-                data: events.map((e) => ({ value: e.peak, itemStyle: { color: SIDE_COLOR[e.side], borderRadius: [4, 4, 0, 0] } })),
-                markLine: {
-                    symbol: 'none',
-                    lineStyle: { color: '#6b7280', type: 'dashed' },
-                    label: { formatter: `avg ${fmt(avg)}` },
-                    data: [{ yAxis: avg }],
-                },
-            },
-        ],
-    };
-};
-
-const sideOption = (events) => ({
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0, textStyle: axisText },
-    series: [
-        {
-            type: 'pie',
-            radius: ['50%', '72%'],
-            center: ['50%', '45%'],
-            label: { formatter: '{b}\n{c}' },
-            data: ['+', '−'].map((s) => ({
-                name: `ay${s}`,
-                value: events.filter((e) => e.side === s).length,
-                itemStyle: { color: SIDE_COLOR[s] },
-            })),
-        },
-    ],
-});
-
-const durPeakOption = (events) => ({
-    grid: baseGrid,
-    tooltip: { trigger: 'item', formatter: (p) => `Event ${p.data[2]}<br/>${fmt(p.data[0])} s · ${fmt(p.data[1])} g` },
-    xAxis: { type: 'value', name: 'duration (s)', nameLocation: 'middle', nameGap: 26, splitLine: dashed, scale: true },
-    yAxis: { type: 'value', name: 'peak g', splitLine: dashed, scale: true },
-    series: ['+', '−'].map((s) => ({
-        name: `ay${s}`,
-        type: 'scatter',
-        symbolSize: 12,
-        itemStyle: { color: SIDE_COLOR[s] },
-        data: events.filter((e) => e.side === s).map((e) => [e.dur, e.peak, e.id]),
-    })),
-    legend: { top: 0, textStyle: axisText },
 });
 
 const rollingOption = (r) => ({
@@ -615,49 +395,9 @@ const steerLatOption = (pairs) => ({
     series: [{ type: 'scatter', data: pairs, symbolSize: 3, itemStyle: { color: 'rgba(115,192,222,0.4)' }, large: true }],
 });
 
-function EventsTable({ events }) {
-    const maxPeak = Math.max(...events.map((e) => e.peak));
-    return (
-        <div className="metrics-table-wrap">
-            <table className="metrics-table">
-                <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Start</th>
-                    <th>Duration</th>
-                    <th>Peak g</th>
-                    <th>Mean g</th>
-                    <th>Peak lateral</th>
-                    <th>Side</th>
-                    <th>Jerk RMS</th>
-                </tr>
-                </thead>
-                <tbody>
-                {events.map((e) => (
-                    <tr key={e.id}>
-                        <td>{e.id}</td>
-                        <td>{fmt(e.start, 1)} s</td>
-                        <td>{fmt(e.dur)} s</td>
-                        <td className={e.peak === maxPeak ? 'is-top' : ''}>{fmt(e.peak)}</td>
-                        <td>{fmt(e.mean)}</td>
-                        <td>{fmt(e.peakLat)}</td>
-                        <td>
-                            <span className="metrics-pill" style={{ background: SIDE_COLOR[e.side] }}>ay{e.side}</span>
-                        </td>
-                        <td>{fmt(e.jerk)}</td>
-                    </tr>
-                ))}
-                </tbody>
-            </table>
-        </div>
-    );
-}
-
 export default function MetricsVisualizer({ selectedRun, removeFunction }) {
     const [state, setState] = useState({ data: null, status: 'loading', info: '' });
     const [tab, setTab] = useState('overview');
-    const [sector, setSector] = useState('lat');
-    const [sectorCount, setSectorCount] = useState(10);
 
     useEffect(() => {
         if (!selectedRun?._id) {
@@ -702,32 +442,17 @@ export default function MetricsVisualizer({ selectedRun, removeFunction }) {
 
     const { data, status, info } = state;
 
-    const sectorKeys = useMemo(
-        () => Object.keys(SECTOR_METRICS).filter((k) => k !== 'steer' || data?.hasGyro),
-        [data]
-    );
-    const activeSector = sectorKeys.includes(sector) ? sector : 'lat';
-
-    const slices = useMemo(() => (data ? computeSectors(data.raw, sectorCount) : []), [data, sectorCount]);
-
     const options = useMemo(() => {
         if (!data) return null;
         return {
-            timeline: timelineOption(data.timeline, data.events, data.threshold),
-            gg: ggOption(data.gg),
-            hist: histOption(data.hist, 'g-force'),
-            sector: sectorOption(slices, activeSector),
-            cumulative: cumulativeOption(data.cumulative),
-            events: data.events.length ? eventsOption(data.events) : null,
-            side: data.events.length ? sideOption(data.events) : null,
-            durPeak: data.events.length ? durPeakOption(data.events) : null,
+            timeline: timelineOption(data.timeline),
             rolling: rollingOption(data.rolling),
             spectrum: data.spectrum ? spectrumOption(data.spectrum) : null,
             steering: data.steer ? steeringOption(data.steer.timeline) : null,
             steerLat: data.steer ? steerLatOption(data.steer.pairs) : null,
             steerHist: data.steer ? histOption(data.steer.hist, 'gyro z', '#73c0de') : null,
         };
-    }, [data, slices, activeSector]);
+    }, [data]);
 
     const tabs = TABS.filter(([key]) => key !== 'steer' || data?.hasGyro);
     const activeTab = tabs.some(([key]) => key === tab) ? tab : 'overview';
@@ -737,12 +462,7 @@ export default function MetricsVisualizer({ selectedRun, removeFunction }) {
             <div className="metrics-header">
                 <div>
                     <div className="metrics-title">Ride metrics</div>
-                    {data && (
-                        <div className="metrics-sub">
-                            {fmt(data.duration)} s · {data.events.length} load events
-                            {Number.isFinite(data.threshold) && ` · threshold ${fmt(data.threshold)} g`}
-                        </div>
-                    )}
+                    {data && <div className="metrics-sub">{fmt(data.duration)} s</div>}
                 </div>
                 <button className="metrics-close" onClick={removeFunction} aria-label="Remove metrics">✕</button>
             </div>
@@ -768,70 +488,11 @@ export default function MetricsVisualizer({ selectedRun, removeFunction }) {
                         <>
                             <Kpis items={data.kpis.overview} />
                             <div className="metrics-charts">
-                                <Card wide title="Load over the ride" hint="g-force and lateral g against ride time. Shaded areas are detected load events. Scroll to zoom.">
+                                <Card wide title="Load over the ride" hint="g-force and lateral g against ride time. Scroll to zoom.">
                                     <EChart option={options.timeline} height={300} />
-                                </Card>
-                                <Card title="g-g diagram" hint="Longitudinal vs lateral g. A tight cluster means a smooth line.">
-                                    <EChart option={options.gg} height={280} />
-                                </Card>
-                                <Card title="Load distribution" hint="Share of the ride spent at each g-force level.">
-                                    <EChart option={options.hist} height={280} />
                                 </Card>
                             </div>
                         </>
-                    )}
-
-                    {activeTab === 'events' && (
-                        <>
-                            <Kpis items={data.kpis.events} />
-                            {data.events.length === 0 ? (
-                                <div className="metrics-state">No load events detected in this ride.</div>
-                            ) : (
-                                <div className="metrics-charts">
-                                    <Card wide title="Peak load per event" hint="Each bar is one load event. Colour shows the side of the lateral load (ay+ or ay−).">
-                                        <EChart option={options.events} height={280} />
-                                    </Card>
-                                    <Card title="Side balance" hint="Number of events on each lateral side.">
-                                        <EChart option={options.side} height={260} />
-                                    </Card>
-                                    <Card title="Duration vs peak load" hint="Long events with low peaks suggest a wide line. Short high peaks suggest a hard hit.">
-                                        <EChart option={options.durPeak} height={260} />
-                                    </Card>
-                                    <Card wide title="Event details" hint="Highest peak is highlighted.">
-                                        <EventsTable events={data.events} />
-                                    </Card>
-                                </div>
-                            )}
-                        </>
-                    )}
-
-                    {activeTab === 'sectors' && (
-                        <div className="metrics-charts">
-                            <Card
-                                wide
-                                title="Ride sectors"
-                                hint="The ride split into equal time slices. Red bars are 25% above the average."
-                                right={
-                                    <div className="metrics-controls">
-                                        <select value={sectorCount} onChange={(e) => setSectorCount(Number(e.target.value))}>
-                                            {[5, 10, 20].map((c) => (
-                                                <option key={c} value={c}>{c} slices</option>
-                                            ))}
-                                        </select>
-                                        <select value={activeSector} onChange={(e) => setSector(e.target.value)}>
-                                            {sectorKeys.map((k) => (
-                                                <option key={k} value={k}>{SECTOR_METRICS[k]}</option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                }
-                            >
-                                <EChart option={options.sector} height={300} />
-                            </Card>
-                            <Card wide title="Cumulative load" hint="Running total of g-force above the resting level. Steep parts are where the ride loads the body most.">
-                                <EChart option={options.cumulative} height={260} />
-                            </Card>
-                        </div>
                     )}
 
                     {activeTab === 'smooth' && (

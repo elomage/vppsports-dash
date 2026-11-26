@@ -72,9 +72,17 @@
 
 .viz-row {
     display: flex;
+    flex: 0 0 auto;
     flex-wrap: nowrap;
+    align-items: stretch;
     width: 100%;
-    min-height: 320px;
+    min-height: 420px;
+}
+
+.viz-row > .viz-card > * {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
 }
 
 .viz-card {

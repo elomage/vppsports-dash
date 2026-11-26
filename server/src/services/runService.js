@@ -833,6 +833,56 @@ const updateRunMetadata = async (runid, fields) => {
   return withRunName(await hydrateRunLabels(run));
 };
 
+const deleteRunSensor = async (runid, sensorId) => {
+  const runObjectId = new ObjectId(String(runid));
+  const numericId = Number(sensorId);
+  if (!Number.isFinite(numericId)) {
+    throw new Error("Invalid sensor id");
+  }
+
+  const readings = await SensorReading.deleteMany({
+    runId: runObjectId,
+    sensorId: numericId,
+  });
+  const meta = await RunSensor.deleteMany({
+    runId: runObjectId,
+    sensorId: numericId,
+  });
+
+  const prefix = `${String(runid)}:${numericId}:`;
+  const labels = await RunLabel.find({ runId: runObjectId }).lean();
+  for (const label of labels) {
+    const traceKeys = Array.isArray(label.traceKeys) ? label.traceKeys : [];
+    const kept = traceKeys.filter((key) => !String(key).startsWith(prefix));
+    if (kept.length === traceKeys.length) continue;
+    if (kept.length === 0) {
+      await RunLabel.deleteOne({ _id: label._id });
+      continue;
+    }
+    const points = (Array.isArray(label.points) ? label.points : []).filter(
+        (point) => !String(point.traceKey).startsWith(prefix)
+    );
+    await RunLabel.updateOne(
+        { _id: label._id },
+        { $set: { traceKeys: kept, points } }
+    );
+  }
+
+  const remaining = await SensorReading.distinct("sensorId", {
+    runId: runObjectId,
+  });
+  await Run.updateOne(
+      { _id: runObjectId },
+      { $set: { sensorCount: remaining.length } }
+  );
+
+  return {
+    deletedReadings: readings.deletedCount,
+    deletedSensors: meta.deletedCount,
+    remainingSensors: remaining.length,
+  };
+};
+
 module.exports = {
   getAllRunsDB,
   getSingleRunDB,
@@ -853,6 +903,7 @@ module.exports = {
   updateRunTrims,
   deleteRunTrims,
   updateRunMetadata,
+  deleteRunSensor,
 };
 
 const withRunName = (run) => {

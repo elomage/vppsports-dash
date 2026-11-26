@@ -551,9 +551,9 @@ export function detectIndices(result) {
     };
 }
 
-export function buildTrimmedCsv(result, start, end, resampleGyro) {
+export function buildTrimmedCsv(result, start, end, resampleGyro, keepTimeline = false) {
     const { t, ax, ay, az, tg, gx, gy, gz } = result;
-    const tZero = t[start];
+    const tZero = keepTimeline ? 0 : t[start];
     const accelRows = ["timestamp,ax,ay,az"];
     for (let i = start; i < end; i++) {
         accelRows.push(
